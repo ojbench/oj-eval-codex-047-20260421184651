@@ -42,6 +42,35 @@ private:
         return to_tar.normalize() * speed;
     }
 
+    // Add simple repulsive field from nearby robots
+    Vec add_repulsion(const Vec &v_goal) const {
+        Vec v = v_goal;
+        int n = monitor->get_robot_number();
+        for (int j = 0; j < n; ++j) {
+            if (j == id) continue;
+            Vec pj = monitor->get_pos_cur(j);
+            double rj = monitor->get_r(j);
+            Vec diff = pos_cur - pj;
+            double d = diff.norm();
+            double delta_r = r + rj;
+            double safe = delta_r + std::max(0.2 * v_max * TIME_INTERVAL, 1e-3);
+            if (d < 1e-9) continue;
+            if (d <= delta_r + 1e-3) {
+                // Too close: push away strongly
+                v += diff.normalize() * std::min(v_max, (delta_r + 1e-3 - d) / TIME_INTERVAL);
+                continue;
+            }
+            if (d < safe) {
+                double factor = (safe - d) / safe; // in (0,1)
+                v += diff.normalize() * (v_max * 0.8 * factor);
+            }
+        }
+        // Cap
+        double sp = v.norm();
+        if (sp > v_max) v = v * (v_max / sp);
+        return v;
+    }
+
     // Check if moving with velocity v_self is collision-free within TIME_INTERVAL
     // against other robots, assuming others keep their last known velocity.
     bool collision_free_with(const Vec &v_self) const;
@@ -57,8 +86,8 @@ public:
             return Vec();
         }
 
-        // Basic desired velocity towards the target
-        Vec v_des = desired_to_target();
+        // Basic desired velocity towards the target and repulsive adjustment
+        Vec v_des = add_repulsion(desired_to_target());
 
         // Scale down speed via binary search until predicted collision-free
         double lo = 0.0, hi = 1.0;
@@ -89,7 +118,7 @@ public:
                 double delta_r = r + best_rj;
                 // Choose cautious sidestep speed relative to clearance and v_max
                 double clearance = std::max(0.0, best_d - delta_r);
-                double sidestep_speed = std::min(v_max * 0.5, clearance / TIME_INTERVAL * 0.8);
+                double sidestep_speed = std::min(v_max * 0.35, clearance / TIME_INTERVAL * 0.6);
                 if (sidestep_speed > 1e-6 && tang.norm() > 1e-9) {
                     Vec v_try1 = tang.normalize() * sidestep_speed;
                     if (collision_free_with(v_try1)) {
