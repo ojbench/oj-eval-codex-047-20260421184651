@@ -75,8 +75,9 @@ private:
     // against other robots, assuming others keep their last known velocity.
     bool collision_free_with(const Vec &v_self) const;
 
-    // Optional priority hint (currently unused)
-    bool should_yield() const;
+    // Optional priority hint: yield to lower IDs on imminent conflict
+    bool should_yield(const Vec &v_self) const;
+    bool collides_with_neighbor(const Vec &v_self, int j) const;
 
 public:
 
@@ -88,6 +89,11 @@ public:
 
         // Basic desired velocity towards the target and repulsive adjustment
         Vec v_des = add_repulsion(desired_to_target());
+
+        // Priority: if moving with v_des would collide and a lower-id neighbor is nearby, yield
+        if (should_yield(v_des)) {
+            return Vec();
+        }
 
         // Scale down speed via binary search until predicted collision-free
         double lo = 0.0, hi = 1.0;
@@ -177,8 +183,41 @@ inline bool Controller::collision_free_with(const Vec &v_self) const {
     return true;
 }
 
-inline bool Controller::should_yield() const {
-    return false; // disabled; rely on collision checks + sidestep
+inline bool Controller::should_yield(const Vec &v_self) const {
+    int n = monitor->get_robot_number();
+    double guard = (v_max + 1e-6) * TIME_INTERVAL + 2.0 * r + 1e-3;
+    for (int j = 0; j < n; ++j) {
+        if (j == id) continue;
+        if (j > id) continue; // yield only to lower IDs
+        Vec pj = monitor->get_pos_cur(j);
+        double rj = monitor->get_r(j);
+        double d = (pos_cur - pj).norm();
+        if (d <= (r + rj) + guard) {
+            if (collides_with_neighbor(v_self, j)) return true;
+        }
+    }
+    return false;
+}
+
+inline bool Controller::collides_with_neighbor(const Vec &v_self, int j) const {
+    Vec pj = monitor->get_pos_cur(j);
+    Vec vj = monitor->get_v_cur(j);
+    double rj = monitor->get_r(j);
+    Vec delta_pos = pos_cur - pj;
+    Vec delta_v = v_self - vj;
+    double project = delta_pos.dot(delta_v);
+    if (project >= 0) return false;
+    double nv = delta_v.norm();
+    if (nv < 1e-12) return false;
+    project /= -nv;
+    double min_dis_sqr;
+    double delta_r = r + rj;
+    if (project < nv * TIME_INTERVAL) {
+        min_dis_sqr = delta_pos.norm_sqr() - project * project;
+    } else {
+        min_dis_sqr = (delta_pos + delta_v * TIME_INTERVAL).norm_sqr();
+    }
+    return min_dis_sqr <= delta_r * delta_r - EPSILON;
 }
 
 #endif // PPCA_SRC_HPP
