@@ -46,7 +46,7 @@ private:
     // against other robots, assuming others keep their last known velocity.
     bool collision_free_with(const Vec &v_self) const;
 
-    // Yield rule: give priority to smaller-id neighbors within a guard radius.
+    // Optional priority hint (currently unused)
     bool should_yield() const;
 
 public:
@@ -60,11 +60,6 @@ public:
         // Basic desired velocity towards the target
         Vec v_des = desired_to_target();
 
-        // Simple priority-based yielding to avoid deadlocks/collisions
-        if (should_yield()) {
-            return Vec();
-        }
-
         // Scale down speed via binary search until predicted collision-free
         double lo = 0.0, hi = 1.0;
         for (int it = 0; it < 25; ++it) {
@@ -77,6 +72,37 @@ public:
             }
         }
         Vec v_final = v_des * lo;
+
+        // If we get stuck (zero speed), try a small tangential sidestep
+        if (v_final.norm() <= 1e-9) {
+            int n = monitor->get_robot_number();
+            double best_d = 1e100; int best_j = -1; double best_rj = 0.0; Vec best_pj;
+            for (int j = 0; j < n; ++j) {
+                if (j == id) continue;
+                Vec pj = monitor->get_pos_cur(j);
+                double d = (pos_cur - pj).norm();
+                if (d < best_d) { best_d = d; best_j = j; best_pj = pj; best_rj = monitor->get_r(j); }
+            }
+            if (best_j != -1) {
+                Vec away = pos_cur - best_pj;
+                Vec tang = Vec(-away.y, away.x);
+                double delta_r = r + best_rj;
+                // Choose cautious sidestep speed relative to clearance and v_max
+                double clearance = std::max(0.0, best_d - delta_r);
+                double sidestep_speed = std::min(v_max * 0.5, clearance / TIME_INTERVAL * 0.8);
+                if (sidestep_speed > 1e-6 && tang.norm() > 1e-9) {
+                    Vec v_try1 = tang.normalize() * sidestep_speed;
+                    if (collision_free_with(v_try1)) {
+                        v_final = v_try1;
+                    } else {
+                        Vec v_try2 = (-tang).normalize() * sidestep_speed;
+                        if (collision_free_with(v_try2)) {
+                            v_final = v_try2;
+                        }
+                    }
+                }
+            }
+        }
         // Final safety clamp to v_max
         double sp = v_final.norm();
         if (sp > v_max) v_final = v_final * (v_max / sp);
@@ -100,12 +126,7 @@ inline bool Controller::collision_free_with(const Vec &v_self) const {
         double rj = monitor->get_r(j);
 
         Vec delta_pos = pos_cur - pj;
-        double d = delta_pos.norm();
         double delta_r = r + rj;
-        if (d <= delta_r + 1e-6) {
-            // Too close already — stay put to avoid worsening overlap
-            return false;
-        }
 
         Vec delta_v = v_self - vj;
         double project = delta_pos.dot(delta_v);
@@ -128,20 +149,7 @@ inline bool Controller::collision_free_with(const Vec &v_self) const {
 }
 
 inline bool Controller::should_yield() const {
-    int n = monitor->get_robot_number();
-    // Guard radius: sum of radii + a buffer proportional to our max movement
-    double guard = v_max * TIME_INTERVAL + 2.0 * r + 1e-3;
-    for (int j = 0; j < n; ++j) {
-        if (j == id) continue;
-        double rj = monitor->get_r(j);
-        Vec pj = monitor->get_pos_cur(j);
-        double d = (pos_cur - pj).norm();
-        if (d <= (r + rj) + guard) {
-            if (j < id) return true; // yield to smaller id in proximity
-        }
-    }
-    return false;
+    return false; // disabled; rely on collision checks + sidestep
 }
 
 #endif // PPCA_SRC_HPP
-
